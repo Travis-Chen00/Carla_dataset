@@ -8,9 +8,9 @@ import numpy as np
 import pygame
 import carla
 import cv2
+import random
 from pygame.locals import K_ESCAPE
 from pygame.locals import K_q
-
 
 class HUD(object):
     def __init__(self, width, height):
@@ -47,37 +47,16 @@ class HUD(object):
                 '']
 
     def render(self, display):
-        if self._show_info:
-            info_surface = pygame.Surface((220, self.dim[1]))
-            info_surface.set_alpha(100)
-            display.blit(info_surface, (0, 0))
-            v_offset = 4
-            bar_h_offset = 100
-            bar_width = 106
-            for item in self._info_text:
-                if v_offset + 18 > self.dim[1]:
-                    break
-                if item != '':
-                    surface = self._font_mono.render(item, True, (255, 255, 255))
-                    display.blit(surface, (8, v_offset))
-                v_offset += 18
-
+        pass  # 不再渲染HUD
 
 class World(object):
-    def __init__(self, client, hud):
+    def __init__(self, client, hud, args):
+        self.args = args
         self.world = None
         self.client = client
         self.hud = hud
         self.player = None
         self.camera = None
-        self.display = None
-        self.image = None
-        self.frame = 0
-        self.simulation_time = 0
-        self.server_fps = 0
-        self.vehicles = []
-        self.vehicle_a = None
-        self.vehicle_b = None
         self.recording = True
         self.current_frame = 0
 
@@ -91,11 +70,11 @@ class World(object):
         self.fps = 30.0
         self.video_writer = None
 
-        # 加载地图
-        self.client.load_world('Town05')  # 选择一个有曲线道路的地图
+        # 加载复杂地图
+        self.client.load_world('Town05')
         self.world = self.client.get_world()
 
-        # 移除现有的车辆
+        # 清理现有车辆
         for actor in self.world.get_actors().filter('vehicle.*'):
             actor.destroy()
 
@@ -105,185 +84,120 @@ class World(object):
         settings.fixed_delta_seconds = 1.0 / 30.0
         self.world.apply_settings(settings)
 
-        # 获取蓝图库
         blueprint_library = self.world.get_blueprint_library()
-
-        # 找到生成点
         spawn_points = self.world.get_map().get_spawn_points()
-        spawn_point = spawn_points[0]  # 使用第一个生成点
+        spawn_point = spawn_points[0]
 
-        # 生成车辆的基础速度参数
-        base_speed = random.uniform(30, 40)  # 基础速度在30-40 km/h之间
-        speed_variation = 5  # 速度变化范围
+        # 基础速度设置
+        base_speed = random.uniform(40, 60)
+        speed_variation = 5
 
-        # 车辆C - 主视角车辆（ego vehicle）
-        vehicle_bp = blueprint_library.filter('model3')[0] if blueprint_library.filter('model3') else \
-        blueprint_library.filter('vehicle.*')[0]
-        self.player = self.world.spawn_actor(vehicle_bp, spawn_point)
-        self.vehicles.append(self.player)
-        print(f"Spawned vehicle C (ego): {self.player.type_id}")
+        # 车辆生成
+        vehicle_models = ['model3', 'audi', 'mustang']
+        self.vehicles = []
 
-        # 车辆A - 在C的前方
-        vehicle_bp_a = blueprint_library.filter('audi')[0] if blueprint_library.filter('audi') else \
-        blueprint_library.filter('vehicle.*')[0]
-        spawn_point_a = carla.Transform(
-            carla.Location(
-                x=spawn_point.location.x + 20 * spawn_point.get_forward_vector().x,
-                y=spawn_point.location.y + 20 * spawn_point.get_forward_vector().y,
-                z=spawn_point.location.z
-            ),
-            spawn_point.rotation
-        )
-        self.vehicle_a = self.world.spawn_actor(vehicle_bp_a, spawn_point_a)
-        self.vehicles.append(self.vehicle_a)
-        print(f"Spawned vehicle A: {self.vehicle_a.type_id}")
+        for i, model in enumerate(vehicle_models):
+            vehicle_bp = blueprint_library.filter(model)[0]
+            
+            # 稍微分散生成点
+            offset = i * 15
+            spawn_point_vehicle = carla.Transform(
+                carla.Location(
+                    x=spawn_point.location.x + offset * spawn_point.get_forward_vector().x,
+                    y=spawn_point.location.y + offset * spawn_point.get_forward_vector().y,
+                    z=spawn_point.location.z
+                ),
+                spawn_point.rotation
+            )
 
-        # 车辆B - 在A和C之间
-        vehicle_bp_b = blueprint_library.filter('mustang')[0] if blueprint_library.filter('mustang') else \
-        blueprint_library.filter('vehicle.*')[0]
-        spawn_point_b = carla.Transform(
-            carla.Location(
-                x=spawn_point.location.x + 10 * spawn_point.get_forward_vector().x,
-                y=spawn_point.location.y + 10 * spawn_point.get_forward_vector().y,
-                z=spawn_point.location.z
-            ),
-            spawn_point.rotation
-        )
-        self.vehicle_b = self.world.spawn_actor(vehicle_bp_b, spawn_point_b)
-        self.vehicles.append(self.vehicle_b)
-        print(f"Spawned vehicle B: {self.vehicle_b.type_id}")
+            vehicle = self.world.spawn_actor(vehicle_bp, spawn_point_vehicle)
+            self.vehicles.append(vehicle)
 
-        # 为每辆车设置不同但相近的速度
-        vehicle_speeds = [
-            base_speed + random.uniform(-speed_variation, 0),    # 车A稍微快一些
-            base_speed,                                          # 车B基础速度
-            base_speed - random.uniform(speed_variation, 2*speed_variation)  # 车C最慢
-        ]
-
-        # 设置车辆速度
-        for vehicle, speed in zip([self.vehicle_a, self.vehicle_b, self.player], vehicle_speeds):
-            # 使用车辆朝向来设置速度
-            forward_vector = vehicle.get_transform().get_forward_vector()
+            # 设置速度
+            speed = base_speed + random.uniform(-speed_variation, speed_variation)
+            forward_vector = spawn_point_vehicle.get_forward_vector()
             velocity = carla.Vector3D(
                 x=forward_vector.x * speed / 3.6,
                 y=forward_vector.y * speed / 3.6,
-                z=forward_vector.z * speed / 3.6
+                z=0
             )
             vehicle.set_target_velocity(velocity)
 
-        # 创建并安装相机
+            # 主车为最后一辆
+            if i == len(vehicle_models) - 1:
+                self.player = vehicle
+
+        # KITTI风格相机
         camera_bp = blueprint_library.find('sensor.camera.rgb')
-        camera_bp.set_attribute('image_size_x', str(hud.dim[0]))
-        camera_bp.set_attribute('image_size_y', str(hud.dim[1]))
-        camera_bp.set_attribute('fov', '100')
+        camera_bp.set_attribute('image_size_x', str(args.width))
+        camera_bp.set_attribute('image_size_y', str(args.height))
+        camera_bp.set_attribute('fov', '110')
 
-        # 设置驾驶员视角
-        camera_transform = carla.Transform(carla.Location(x=-2.0, z=3.0), carla.Rotation(pitch=-15))
+        # KITTI标准相机位置
+        camera_transform = carla.Transform(
+            carla.Location(x=1.5, y=0.5, z=2.0),  # 右侧偏置，高2米
+            carla.Rotation(pitch=-10, yaw=0)  # 略微向下10度
+        )
         self.camera = self.world.spawn_actor(camera_bp, camera_transform, attach_to=self.player)
-
-        # 设置回调函数处理相机图像
         self.camera.listen(self._parse_image)
 
-        # 更新HUD的车辆信息
-        self.hud.vehicle_info = {
-            'name': self.player.type_id,
-            'speed': 0.0
-        }
-
-        # 设置录制时间
+        # 录制设置
         self.recording_start_time = time.time()
         self.recording_duration = 10.0
 
-        # 等待一帧以确保世界已更新
+        # 初始世界状态
         self.world.tick()
-
-    def tick(self, clock):
-        if self.player:
-            velocity = self.player.get_velocity()
-            speed = 3.6 * np.sqrt(velocity.x ** 2 + velocity.y ** 2 + velocity.z ** 2)
-            self.hud.vehicle_info['speed'] = speed
-
-        # 让世界更新
-        self.world.tick()
-
-        snapshot = self.world.get_snapshot()
-        self.frame = snapshot.frame
-        self.simulation_time = snapshot.timestamp.elapsed_seconds
-        self.server_fps = 1.0 / snapshot.timestamp.delta_seconds if snapshot.timestamp.delta_seconds > 0 else 0
-        self.hud.tick(self, clock)
-
-        # 检查是否应该结束录制
-        if self.recording and (time.time() - self.recording_start_time) > self.recording_duration:
-            print(f"Recording completed after {self.recording_duration} seconds")
-            self.recording = False
-            if self.video_writer is not None:
-                self.video_writer.release()
-                print(f"Video saved to {self.video_dir}/recording.mp4")
-
-    def render(self, display):
-        if self.image is not None:
-            display.blit(self.image, (0, 0))
-        self.hud.render(display)
 
     def _parse_image(self, image):
         array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
         array = np.reshape(array, (image.height, image.width, 4))
         array = array[:, :, :3]
+        bgr_array = array[:, :, ::-1]
 
-        # 为OpenCV转换颜色通道顺序（RGB到BGR）
-        # 修复错误：创建数组的可写副本
-        bgr_array = np.copy(array[:, :, ::-1])
-
-        # 添加标签到图像上
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        cv2.putText(bgr_array, "Vehicle A", (50, 50), font, 1, (0, 0, 255), 2, cv2.LINE_AA)
-        cv2.putText(bgr_array, "Vehicle B", (50, 100), font, 1, (255, 0, 0), 2, cv2.LINE_AA)
-        cv2.putText(bgr_array, "Vehicle C (Ego)", (50, 150), font, 1, (0, 255, 0), 2, cv2.LINE_AA)
-
-        # 保存图像帧到文件
+        # 保存图像和视频
         if self.recording:
             frame_filename = os.path.join(self.img_dir, f"frame_{self.current_frame:06d}.png")
             cv2.imwrite(frame_filename, bgr_array)
 
-            # 初始化视频写入器（如果还没初始化）
             if self.video_writer is None:
                 fourcc = cv2.VideoWriter_fourcc(*'mp4v')
                 self.video_writer = cv2.VideoWriter(
                     os.path.join(self.video_dir, 'recording.mp4'),
-                    fourcc,
-                    self.fps,
+                    fourcc, self.fps, 
                     (image.width, image.height)
                 )
 
-            # 写入视频帧
             self.video_writer.write(bgr_array)
             self.current_frame += 1
 
-        # 转换为Pygame表面
-        array = array[:, :, ::-1]  # 转回RGB给Pygame
-        self.image = pygame.surfarray.make_surface(array.swapaxes(0, 1))
+    def tick(self, clock):
+        self.world.tick()
+
+        # 检查录制是否完成
+        if self.recording and (time.time() - self.recording_start_time) > self.recording_duration:
+            print(f"Recording completed after {self.recording_duration} seconds")
+            self.recording = False
+            if self.video_writer:
+                self.video_writer.release()
+                print(f"Video saved to {self.video_dir}/recording.mp4")
 
     def destroy(self):
-        # 恢复异步模式
         settings = self.world.get_settings()
         settings.synchronous_mode = False
         self.world.apply_settings(settings)
 
-        # 清理视频写入器
-        if self.video_writer is not None:
+        if self.video_writer:
             self.video_writer.release()
 
-        # 销毁所有车辆和传感器
-        actors = [self.camera] + self.vehicles
-        for actor in actors:
-            if actor is not None:
+        for actor in [self.camera] + self.vehicles:
+            if actor:
                 actor.destroy()
-
 
 class Controller(object):
     def __init__(self, world):
         self.world = world
         self.clock = pygame.time.Clock()
+        pygame.display.set_caption("KITTI-style CARLA Recording")
         self._running = True
         self._main_loop()
 
@@ -291,30 +205,21 @@ class Controller(object):
         try:
             while self._running:
                 for event in pygame.event.get():
-                    if event.type == pygame.QUIT:
+                    if event.type == pygame.QUIT or \
+                       (event.type == pygame.KEYUP and 
+                        (event.key == K_ESCAPE or event.key == K_q)):
                         self._running = False
-                    elif event.type == pygame.KEYUP:
-                        if event.key == K_ESCAPE or event.key == K_q:
-                            self._running = False
 
-                # 游戏循环更新
                 self.clock.tick_busy_loop(60)
                 self.world.tick(self.clock)
-                self.world.render(self.world.display)
-                pygame.display.flip()
 
-                # 如果录制完成且仍在运行，显示结束信息
                 if not self.world.recording and self._running:
-                    font = pygame.font.Font(None, 36)
-                    text = font.render("Recording completed, press ESC to exit", True, (255, 255, 255))
-                    self.world.display.blit(text, (self.world.hud.dim[0] // 2 - 180, self.world.hud.dim[1] - 50))
-                    pygame.display.flip()
+                    print("Recording completed. Press ESC to exit.")
+                    break
 
         finally:
-            # 退出时清理
             self.world.destroy()
             pygame.quit()
-
 
 def game_loop(args):
     pygame.init()
@@ -324,15 +229,10 @@ def game_loop(args):
         client = carla.Client(args.host, args.port)
         client.set_timeout(10.0)
 
-        display = pygame.display.set_mode(
-            (args.width, args.height),
-            pygame.HWSURFACE | pygame.DOUBLEBUF)
-        pygame.display.set_caption("CARLA Multi-Vehicle Recording")
-
+        # 不再创建显示窗口，因为我们只关注相机录制
         hud = HUD(args.width, args.height)
-        world = World(client, hud)
-        world.display = display
-
+        world = World(client, hud, args)
+        
         controller = Controller(world)
 
     except Exception as e:
@@ -341,68 +241,24 @@ def game_loop(args):
         traceback.print_exc()
         pygame.quit()
 
-
 def main():
-    argparser = argparse.ArgumentParser(
-        description='CARLA Multi-Vehicle Recording')
-    argparser.add_argument(
-        '-v', '--verbose',
-        action='store_true',
-        dest='debug',
-        help='print debug information')
-    argparser.add_argument(
-        '--host',
-        metavar='H',
-        default='127.0.0.1',
-        help='IP of the host server (default: 127.0.0.1)')
-    argparser.add_argument(
-        '-p', '--port',
-        metavar='P',
-        default=2000,
-        type=int,
-        help='TCP port to listen to (default: 2000)')
-    argparser.add_argument(
-        '-a', '--autopilot',
-        action='store_true',
-        default=True,
-        help='enable autopilot')
-    argparser.add_argument(
-        '--res',
-        metavar='WIDTHxHEIGHT',
-        default='1280x720',
-        help='window resolution (default: 1280x720)')
-    argparser.add_argument(
-        '--filter',
-        metavar='PATTERN',
-        default='vehicle.*',
-        help='actor filter (default: "vehicle.*")')
+    argparser = argparse.ArgumentParser(description='KITTI-style CARLA Recording')
+    argparser.add_argument('--host', metavar='H', default='127.0.0.1', help='Server host')
+    argparser.add_argument('-p', '--port', metavar='P', default=2000, type=int, help='Server port')
+    argparser.add_argument('--res', metavar='WIDTHxHEIGHT', default='1280x720', help='Image resolution')
+    
     args = argparser.parse_args()
-
     args.width, args.height = [int(x) for x in args.res.split('x')]
 
-    log_level = logging.DEBUG if args.debug else logging.INFO
-    logging.basicConfig(format='%(levelname)s: %(message)s', level=log_level)
-
-    logging.info('listening to server %s:%s', args.host, args.port)
-
-    print("CARLA Multi-Vehicle Recording Script")
-    print("- Recording 10 seconds of gameplay")
+    print("KITTI-style CARLA Recording Script")
+    print(f"- Recording {10} seconds of gameplay")
     print("- Frames saved to 'img' folder")
     print("- Video saved to 'video' folder")
-    print("- Press ESC or Q to quit")
 
-    try:
-        game_loop(args)
-    except KeyboardInterrupt:
-        print('\nCancelled by user. Bye!')
-
+    game_loop(args)
 
 if __name__ == '__main__':
     try:
-        import sys
-        import cv2
-
         main()
-    except ImportError:
-        print("ERROR: Please install the required libraries:")
-        print("pip install numpy pygame opencv")
+    except KeyboardInterrupt:
+        print('\nCancelled by user. Bye!')
