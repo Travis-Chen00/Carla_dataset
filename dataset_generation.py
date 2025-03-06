@@ -91,15 +91,15 @@ class World(object):
         self.fps = 30.0
         self.video_writer = None
 
-        # 加载最简单的地图 - Town01或Town02通常比较简单
-        self.client.load_world('Town01')
+        # 加载地图
+        self.client.load_world('Town05')  # 选择一个有曲线道路的地图
         self.world = self.client.get_world()
 
         # 移除现有的车辆
         for actor in self.world.get_actors().filter('vehicle.*'):
             actor.destroy()
 
-        # 设置同步模式，使帧率更稳定
+        # 设置同步模式
         settings = self.world.get_settings()
         settings.synchronous_mode = True
         settings.fixed_delta_seconds = 1.0 / 30.0
@@ -108,9 +108,13 @@ class World(object):
         # 获取蓝图库
         blueprint_library = self.world.get_blueprint_library()
 
-        # 找到一个好的车道
+        # 找到生成点
         spawn_points = self.world.get_map().get_spawn_points()
-        spawn_point = spawn_points[0]  # 使用第一个生成点，通常是大道
+        spawn_point = spawn_points[0]  # 使用第一个生成点
+
+        # 生成车辆的基础速度参数
+        base_speed = random.uniform(30, 40)  # 基础速度在30-40 km/h之间
+        speed_variation = 5  # 速度变化范围
 
         # 车辆C - 主视角车辆（ego vehicle）
         vehicle_bp = blueprint_library.filter('model3')[0] if blueprint_library.filter('model3') else \
@@ -119,13 +123,13 @@ class World(object):
         self.vehicles.append(self.player)
         print(f"Spawned vehicle C (ego): {self.player.type_id}")
 
-        # 车辆A - 在C的前方约15米
+        # 车辆A - 在C的前方
         vehicle_bp_a = blueprint_library.filter('audi')[0] if blueprint_library.filter('audi') else \
         blueprint_library.filter('vehicle.*')[0]
         spawn_point_a = carla.Transform(
             carla.Location(
-                x=spawn_point.location.x + 15 * spawn_point.get_forward_vector().x,
-                y=spawn_point.location.y + 15 * spawn_point.get_forward_vector().y,
+                x=spawn_point.location.x + 20 * spawn_point.get_forward_vector().x,
+                y=spawn_point.location.y + 20 * spawn_point.get_forward_vector().y,
                 z=spawn_point.location.z
             ),
             spawn_point.rotation
@@ -134,13 +138,13 @@ class World(object):
         self.vehicles.append(self.vehicle_a)
         print(f"Spawned vehicle A: {self.vehicle_a.type_id}")
 
-        # 车辆B - 在A和C之间，离C约7米
+        # 车辆B - 在A和C之间
         vehicle_bp_b = blueprint_library.filter('mustang')[0] if blueprint_library.filter('mustang') else \
         blueprint_library.filter('vehicle.*')[0]
         spawn_point_b = carla.Transform(
             carla.Location(
-                x=spawn_point.location.x + 7 * spawn_point.get_forward_vector().x,
-                y=spawn_point.location.y + 7 * spawn_point.get_forward_vector().y,
+                x=spawn_point.location.x + 10 * spawn_point.get_forward_vector().x,
+                y=spawn_point.location.y + 10 * spawn_point.get_forward_vector().y,
                 z=spawn_point.location.z
             ),
             spawn_point.rotation
@@ -149,13 +153,31 @@ class World(object):
         self.vehicles.append(self.vehicle_b)
         print(f"Spawned vehicle B: {self.vehicle_b.type_id}")
 
-        # 创建并安装相机（视角抬高）
+        # 为每辆车设置不同但相近的速度
+        vehicle_speeds = [
+            base_speed + random.uniform(-speed_variation, 0),    # 车A稍微快一些
+            base_speed,                                          # 车B基础速度
+            base_speed - random.uniform(speed_variation, 2*speed_variation)  # 车C最慢
+        ]
+
+        # 设置车辆速度
+        for vehicle, speed in zip([self.vehicle_a, self.vehicle_b, self.player], vehicle_speeds):
+            # 使用车辆朝向来设置速度
+            forward_vector = vehicle.get_transform().get_forward_vector()
+            velocity = carla.Vector3D(
+                x=forward_vector.x * speed / 3.6,
+                y=forward_vector.y * speed / 3.6,
+                z=forward_vector.z * speed / 3.6
+            )
+            vehicle.set_target_velocity(velocity)
+
+        # 创建并安装相机
         camera_bp = blueprint_library.find('sensor.camera.rgb')
         camera_bp.set_attribute('image_size_x', str(hud.dim[0]))
         camera_bp.set_attribute('image_size_y', str(hud.dim[1]))
-        camera_bp.set_attribute('fov', '100')  # 增大视场角
+        camera_bp.set_attribute('fov', '100')
 
-        # 设置驾驶员视角位置，高度抬高
+        # 设置驾驶员视角
         camera_transform = carla.Transform(carla.Location(x=-2.0, z=3.0), carla.Rotation(pitch=-15))
         self.camera = self.world.spawn_actor(camera_bp, camera_transform, attach_to=self.player)
 
@@ -168,13 +190,9 @@ class World(object):
             'speed': 0.0
         }
 
-        # 为所有车辆设置自动驾驶，并确保它们沿着同一路径行驶
-        for vehicle in self.vehicles:
-            vehicle.set_autopilot(True)
-
         # 设置录制时间
         self.recording_start_time = time.time()
-        self.recording_duration = 10.0  # 10秒钟
+        self.recording_duration = 10.0
 
         # 等待一帧以确保世界已更新
         self.world.tick()
