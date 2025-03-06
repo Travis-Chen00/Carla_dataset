@@ -12,53 +12,14 @@ import random
 from pygame.locals import K_ESCAPE
 from pygame.locals import K_q
 
-class HUD(object):
-    def __init__(self, width, height):
-        self.dim = (width, height)
-        font = pygame.font.Font(pygame.font.get_default_font(), 20)
-        fonts = [x for x in pygame.font.get_fonts()]
-        default_font = 'ubuntumono'
-        mono = default_font if default_font in fonts else fonts[0]
-        mono = pygame.font.match_font(mono)
-        self._font_mono = pygame.font.Font(mono, 14)
-        self._notifications = []
-        self.server_fps = 0
-        self.frame = 0
-        self.simulation_time = 0
-        self._show_info = True
-        self._info_text = []
-        self.vehicle_info = {}
-
-    def tick(self, world, clock):
-        self._notifications.clear()
-        self.frame = world.frame
-        self.simulation_time = world.simulation_time
-        self.server_fps = world.server_fps
-        self._info_text = [
-            'Server:  % 16.0f FPS' % self.server_fps,
-            'Time:    % 16.0f s' % self.simulation_time,
-            'Vehicles: A, B, C (Ego)',
-            'Recording: % 16.1f s' % (10.0 - (time.time() - world.recording_start_time)),
-            '']
-        if len(self.vehicle_info) > 0:
-            self._info_text += [
-                'Ego Vehicle: % 20s' % self.vehicle_info.get('name', ''),
-                'Speed:   % 15.0f km/h' % (self.vehicle_info.get('speed', 0.0) * 3.6),
-                '']
-
-    def render(self, display):
-        pass  # 不再渲染HUD
-
 class World(object):
-    def __init__(self, client, hud, args):
+    def __init__(self, client, args):
         self.args = args
         self.world = None
         self.client = client
-        self.hud = hud
-        self.player = None
-        self.camera = None
         self.recording = True
         self.current_frame = 0
+        self.vehicles = []
 
         # 创建保存目录
         self.img_dir = 'img'
@@ -70,7 +31,7 @@ class World(object):
         self.fps = 30.0
         self.video_writer = None
 
-        # 加载复杂地图
+        # 加载地图
         self.client.load_world('Town05')
         self.world = self.client.get_world()
 
@@ -86,21 +47,25 @@ class World(object):
 
         blueprint_library = self.world.get_blueprint_library()
         spawn_points = self.world.get_map().get_spawn_points()
-        spawn_point = spawn_points[0]
+        
+        # 选择一个直路段的生成点
+        spawn_point = next(
+            point for point in spawn_points 
+            if point.location.x > 0 and point.location.y > 0
+        )
 
         # 基础速度设置
-        base_speed = random.uniform(40, 60)
-        speed_variation = 5
+        base_speed = random.uniform(40, 50)  # 40-50 km/h
 
-        # 车辆生成
-        vehicle_models = ['model3', 'audi', 'mustang']
-        self.vehicles = []
+        # 前方两辆车的车型
+        vehicle_models = ['model3', 'audi']
 
+        # 生成前方两辆车
         for i, model in enumerate(vehicle_models):
             vehicle_bp = blueprint_library.filter(model)[0]
             
-            # 稍微分散生成点
-            offset = i * 15
+            # 精确控制车辆间距
+            offset = (i + 1) * 15  # 每辆车间隔15米
             spawn_point_vehicle = carla.Transform(
                 carla.Location(
                     x=spawn_point.location.x + offset * spawn_point.get_forward_vector().x,
@@ -111,10 +76,9 @@ class World(object):
             )
 
             vehicle = self.world.spawn_actor(vehicle_bp, spawn_point_vehicle)
-            self.vehicles.append(vehicle)
-
-            # 设置速度
-            speed = base_speed + random.uniform(-speed_variation, speed_variation)
+            
+            # 设置略有不同的速度
+            speed = base_speed + random.uniform(-3, 3)
             forward_vector = spawn_point_vehicle.get_forward_vector()
             velocity = carla.Vector3D(
                 x=forward_vector.x * speed / 3.6,
@@ -122,12 +86,13 @@ class World(object):
                 z=0
             )
             vehicle.set_target_velocity(velocity)
+            
+            # 设置自动驾驶
+            vehicle.set_autopilot(True)
+            
+            self.vehicles.append(vehicle)
 
-            # 主车为最后一辆
-            if i == len(vehicle_models) - 1:
-                self.player = vehicle
-
-        # KITTI风格相机
+        # KITTI风格相机 - 安装在最后一辆车上
         camera_bp = blueprint_library.find('sensor.camera.rgb')
         camera_bp.set_attribute('image_size_x', str(args.width))
         camera_bp.set_attribute('image_size_y', str(args.height))
@@ -138,7 +103,11 @@ class World(object):
             carla.Location(x=1.5, y=0.5, z=2.0),  # 右侧偏置，高2米
             carla.Rotation(pitch=-10, yaw=0)  # 略微向下10度
         )
-        self.camera = self.world.spawn_actor(camera_bp, camera_transform, attach_to=self.player)
+        self.camera = self.world.spawn_actor(
+            camera_bp, 
+            camera_transform, 
+            attach_to=self.vehicles[-1]  # 附加到最后一辆车
+        )
         self.camera.listen(self._parse_image)
 
         # 录制设置
@@ -153,6 +122,13 @@ class World(object):
         array = np.reshape(array, (image.height, image.width, 4))
         array = array[:, :, :3]
         bgr_array = array[:, :, ::-1]
+
+        # 添加车辆标签
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        cv2.putText(bgr_array, "Vehicle Ahead 1", (50, 50), 
+                    font, 1, (0, 255, 0), 2, cv2.LINE_AA)
+        cv2.putText(bgr_array, "Vehicle Ahead 2", (50, 100), 
+                    font, 1, (0, 0, 255), 2, cv2.LINE_AA)
 
         # 保存图像和视频
         if self.recording:
@@ -229,10 +205,7 @@ def game_loop(args):
         client = carla.Client(args.host, args.port)
         client.set_timeout(10.0)
 
-        # 不再创建显示窗口，因为我们只关注相机录制
-        hud = HUD(args.width, args.height)
-        world = World(client, hud, args)
-        
+        world = World(client, args)
         controller = Controller(world)
 
     except Exception as e:
