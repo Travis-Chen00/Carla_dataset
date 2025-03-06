@@ -211,69 +211,78 @@ class World(object):
         for actor in [self.camera] + self.vehicles:
             if actor:
                 actor.destroy()
-class Controller(object):
-    def __init__(self, world):
-        self.world = world
-        self.clock = pygame.time.Clock()
-        pygame.display.set_caption("KITTI-style CARLA Recording")
-        self._running = True
-        self._main_loop()
-
-    def _main_loop(self):
-        try:
-            while self._running:
-                for event in pygame.event.get():
-                    if event.type == pygame.QUIT or \
-                       (event.type == pygame.KEYUP and 
-                        (event.key == K_ESCAPE or event.key == K_q)):
-                        self._running = False
-
-                self.clock.tick_busy_loop(60)
-                self.world.tick(self.clock)
-
-                if not self.world.recording and self._running:
-                    print("Recording completed. Press ESC to exit.")
-                    break
-
-        finally:
-            self.world.destroy()
-            pygame.quit()
 
 def game_loop(args):
     pygame.init()
     pygame.font.init()
+    world = None
 
     try:
         client = carla.Client(args.host, args.port)
-        client.set_timeout(10.0)
+        client.set_timeout(2000.0)
 
         world = World(client, args)
-        controller = Controller(world)
 
-    except Exception as e:
-        print(f"Error occurred: {e}")
-        import traceback
-        traceback.print_exc()
+        clock = pygame.time.Clock()
+        display = pygame.display.set_mode(
+            (args.width, args.height),
+            pygame.HWSURFACE | pygame.DOUBLEBUF
+        )
+        pygame.display.set_caption("CARLA Scenario")
+
+        while True:
+            clock.tick_busy_loop(60)
+            world.tick(clock)
+
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    return
+                if event.type == pygame.KEYUP:
+                    if event.key == K_ESCAPE or event.key == K_q:
+                        return
+
+            pygame.display.flip()
+
+    finally:
+        if world is not None:
+            world.destroy()
         pygame.quit()
 
 def main():
-    argparser = argparse.ArgumentParser(description='KITTI-style CARLA Recording')
-    argparser.add_argument('--host', metavar='H', default='127.0.0.1', help='Server host')
-    argparser.add_argument('-p', '--port', metavar='P', default=2000, type=int, help='Server port')
-    argparser.add_argument('--res', metavar='WIDTHxHEIGHT', default='1280x720', help='Image resolution')
-    
+    argparser = argparse.ArgumentParser(description='CARLA Scenario')
+    argparser.add_argument(
+        '--host',
+        metavar='H',
+        default='127.0.0.1',
+        help='IP of the host server (default: 127.0.0.1)'
+    )
+    argparser.add_argument(
+        '-p', '--port',
+        metavar='P',
+        default=2000,
+        type=int,
+        help='TCP port to listen to (default: 2000)'
+    )
+    argparser.add_argument(
+        '--width',
+        default=800,
+        type=int,
+        help='Width of the window (default: 800)'
+    )
+    argparser.add_argument(
+        '--height',
+        default=600,
+        type=int,
+        help='Height of the window (default: 600)'
+    )
     args = argparser.parse_args()
-    args.width, args.height = [int(x) for x in args.res.split('x')]
 
-    print("KITTI-style CARLA Recording Script")
-    print(f"- Recording {10} seconds of gameplay")
-    print("- Frames saved to 'img' folder")
-    print("- Video saved to 'video' folder")
-
-    game_loop(args)
+    try:
+        game_loop(args)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        print('\nExit.')
 
 if __name__ == '__main__':
-    try:
-        main()
-    except KeyboardInterrupt:
-        print('\nCancelled by user. Bye!')
+    main()
