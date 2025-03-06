@@ -60,6 +60,9 @@ class World(object):
         # 前方两辆车的车型
         vehicle_models = ['model3', 'audi']
 
+        # 存储车辆详细信息的列表
+        self.vehicle_details = []
+
         # 生成前方两辆车
         for i, model in enumerate(vehicle_models):
             vehicle_bp = blueprint_library.filter(model)[0]
@@ -90,6 +93,14 @@ class World(object):
             # 设置自动驾驶
             vehicle.set_autopilot(True)
             
+            # 存储车辆详细信息
+            vehicle_info = {
+                'actor': vehicle,
+                'model': model,
+                'initial_speed': speed,
+                'spawn_point': spawn_point_vehicle
+            }
+            self.vehicle_details.append(vehicle_info)
             self.vehicles.append(vehicle)
 
         # KITTI风格相机 - 安装在最后一辆车上
@@ -118,17 +129,37 @@ class World(object):
         self.world.tick()
 
     def _parse_image(self, image):
+        # 创建可写的NumPy数组副本
         array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
         array = np.reshape(array, (image.height, image.width, 4))
         array = array[:, :, :3]
-        bgr_array = array[:, :, ::-1]
+        
+        # 创建可写副本
+        bgr_array = np.copy(array[:, :, ::-1])
 
         # 添加车辆标签
         font = cv2.FONT_HERSHEY_SIMPLEX
-        cv2.putText(bgr_array, "Vehicle Ahead 1", (50, 50), 
+        cv2.putText(bgr_array, f"Vehicle 1: {self.vehicle_details[0]['model']}", (50, 50), 
                     font, 1, (0, 255, 0), 2, cv2.LINE_AA)
-        cv2.putText(bgr_array, "Vehicle Ahead 2", (50, 100), 
+        cv2.putText(bgr_array, f"Vehicle 2: {self.vehicle_details[1]['model']}", (50, 100), 
                     font, 1, (0, 0, 255), 2, cv2.LINE_AA)
+
+        # 记录车辆详细信息
+        for i, vehicle_info in enumerate(self.vehicle_details, 1):
+            vehicle = vehicle_info['actor']
+            velocity = vehicle.get_velocity()
+            speed = 3.6 * np.sqrt(velocity.x**2 + velocity.y**2 + velocity.z**2)
+            location = vehicle.get_location()
+            
+            # 可以根据需要记录更多信息
+            vehicle_info.update({
+                'current_speed': speed,
+                'location': {
+                    'x': location.x,
+                    'y': location.y,
+                    'z': location.z
+                }
+            })
 
         # 保存图像和视频
         if self.recording:
@@ -151,6 +182,15 @@ class World(object):
 
         # 检查录制是否完成
         if self.recording and (time.time() - self.recording_start_time) > self.recording_duration:
+            print("Recording Details:")
+            for i, vehicle_info in enumerate(self.vehicle_details, 1):
+                print(f"Vehicle {i}:")
+                print(f"  Model: {vehicle_info['model']}")
+                print(f"  Initial Speed: {vehicle_info['initial_speed']:.2f} km/h")
+                print(f"  Current Speed: {vehicle_info.get('current_speed', 'N/A'):.2f} km/h")
+                print(f"  Location: {vehicle_info.get('location', 'N/A')}")
+                print()
+
             print(f"Recording completed after {self.recording_duration} seconds")
             self.recording = False
             if self.video_writer:
@@ -168,7 +208,6 @@ class World(object):
         for actor in [self.camera] + self.vehicles:
             if actor:
                 actor.destroy()
-
 class Controller(object):
     def __init__(self, world):
         self.world = world
