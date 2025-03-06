@@ -67,8 +67,8 @@ class World(object):
         for i, model in enumerate(vehicle_models):
             vehicle_bp = blueprint_library.filter(model)[0]
             
-            # 精确控制车辆间距，间隔约10米
-            offset = (i + 1) * 10  # 每辆车间隔10米
+            # 精确控制车辆间距，间隔约5米
+            offset = (i + 1) * 5  # 每辆车间隔5米
             spawn_point_vehicle = carla.Transform(
                 carla.Location(
                     x=spawn_point.location.x + offset * spawn_point.get_forward_vector().x,
@@ -110,10 +110,10 @@ class World(object):
         camera_bp.set_attribute('image_size_y', str(args.height))
         camera_bp.set_attribute('fov', '110')
 
-        # KITTI标准相机位置
+        # KITTI标准相机位置 - 精确调整
         camera_transform = carla.Transform(
-            carla.Location(x=1.5, y=0.5, z=2.0),  # 右侧偏置，高2米
-            carla.Rotation(pitch=-10, yaw=0)  # 略微向下10度
+            carla.Location(x=1.5, y=-0.3, z=1.7),  # 左侧微微偏置，高度接近人眼
+            carla.Rotation(pitch=-5, yaw=0)  # 略微向下
         )
         self.camera = self.world.spawn_actor(
             camera_bp, 
@@ -140,8 +140,8 @@ class World(object):
 
         # 添加车辆标签
         font = cv2.FONT_HERSHEY_SIMPLEX
-        for i, vehicle_info in enumerate(self.vehicle_details):
-            color = (0, 255, 0) if i == 0 else (0, 0, 255) if i == 1 else (255, 0, 0)
+        for i, vehicle_info in enumerate(self.vehicle_details[:-1]):  # 不包括最后一辆车（C车）
+            color = (0, 255, 0) if i == 0 else (0, 0, 255)  # A绿色，B红色
             cv2.putText(bgr_array, 
                         f"Vehicle {vehicle_info['name']}: {vehicle_info['model']}", 
                         (50, 50 + i*50), 
