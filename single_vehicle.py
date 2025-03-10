@@ -34,6 +34,35 @@ def check_spawn_points(world, spawn_points):
     return valid_spawn_points
 
 
+def set_traffic_lights(world):
+    """
+    设置并自定义交通信号灯周期
+    """
+    # 获取所有交通信号灯
+    traffic_lights = world.get_actors().filter('traffic.traffic_light')
+
+    for traffic_light in traffic_lights:
+        # 尝试设置信号灯状态
+        try:
+            traffic_light.freeze(True)  # 冻结信号灯状态
+            traffic_light.set_state(carla.TrafficLightState.Green)  # 初始设置为绿灯
+        except Exception as e:
+            print(f"Error setting traffic light state: {e}")
+
+
+def reset_traffic_lights(world):
+    """
+    重置交通信号灯
+    """
+    traffic_lights = world.get_actors().filter('traffic.traffic_light')
+
+    for traffic_light in traffic_lights:
+        try:
+            traffic_light.freeze(False)  # 解冻信号灯
+        except Exception as e:
+            print(f"Error resetting traffic light: {e}")
+
+
 class World(object):
     def __init__(self, client, args):
         self.args = args
@@ -51,14 +80,16 @@ class World(object):
         os.makedirs(self.video_dir, exist_ok=True)
 
         # 录像设置
-        self.fps = 30.0
+        self.fps = 60.0
         self.video_writer = None
         self.recording_start_time = None
-        self.recording_duration = 25.0  # 25秒
-        self.initial_stabilization_time = 3.0  # 初始稳定时间
+        self.recording_duration = 5.0
+        self.initial_stabilization_time = 3.0  # 增加初始稳定时间
+        self.frame_buffer = []  # 添加帧缓存
+        self.max_buffer_size = int(self.fps * self.initial_stabilization_time)  # 缓存3秒的帧
 
         # 加载地图
-        self.client.load_world('Town05')
+        self.client.load_world('Town02')
         self.world = self.client.get_world()
 
         # 清理现有车辆
@@ -83,13 +114,13 @@ class World(object):
         available_models = blueprint_library.filter('vehicle.*')
         try:
             c_car_bp = next(bp for bp in available_models if
-                            'mustang' in bp.id.lower())
+                            'model3' in bp.id.lower())
         except StopIteration:
             print("Specified car models not found, using a random vehicle model")
             c_car_bp = random.choice(available_models)
 
         # 车辆参数设置
-        self.base_speed = 8
+        self.base_speed = 3
         self.vehicle_details = []
 
         # 创建ego车辆
@@ -135,19 +166,17 @@ class World(object):
 
             # 为B车选择不同的车型
             try:
-                b_car_bp = random.choice([bp for bp in available_models if 'cybertruck' in bp.id.lower() and bp.id != c_car_bp.id])
+                b_car_bp = random.choice([bp for bp in available_models if bp.id != c_car_bp.id])
             except:
                 b_car_bp = random.choice(available_models)
 
-            # 生成B车
-            print(f"Spawning B vehicle at {spawn_transform.location}, {distance} meters ahead of ego")
             b_vehicle = self.world.spawn_actor(b_car_bp, spawn_transform)
 
             # 将B车添加到车辆列表
             b_info = {
                 'actor': b_vehicle,
                 'model': b_car_bp.id,
-                'initial_speed': self.base_speed - 5,  # 让B车速度稍慢，便于观察
+                'initial_speed': self.base_speed + 1,
                 'spawn_point': spawn_transform,
                 'name': 'B-Vehicle'
             }
@@ -157,12 +186,16 @@ class World(object):
             a_spawn_point = None
             lane_description = None
 
-            # 找到比B车更前方10米的路点
+            # 找到比B车更前方的路点
             extended_waypoints = []
             current_waypoint = front_waypoint
             distance_from_b = 0
 
-            while distance_from_b < 10:  # 向前10米
+            # 确定目标距离
+            left_lane_distance = 40  # 左车道30米
+            right_lane_distance = 15  # 右车道10米
+
+            while distance_from_b < max(left_lane_distance, right_lane_distance):  # 使用最大距离
                 next_wps = current_waypoint.next(5.0)
                 if not next_wps:
                     break
@@ -172,25 +205,29 @@ class World(object):
 
             # 如果成功找到更前方的路点
             if extended_waypoints:
-                # 使用最后一个路点作为参考
-                final_waypoint = extended_waypoints[-1]
+                # 选择适当距离的路点
+                if len(extended_waypoints) >= left_lane_distance // 5 and len(
+                        extended_waypoints) >= right_lane_distance // 5:
+                    left_target_waypoint = extended_waypoints[left_lane_distance // 5 - 1]
+                    right_target_waypoint = extended_waypoints[right_lane_distance // 5 - 1]
 
-                left_lane_waypoint = final_waypoint.get_left_lane()
-                right_lane_waypoint = final_waypoint.get_right_lane()
+                    left_lane_waypoint = left_target_waypoint.get_left_lane()
+                    right_lane_waypoint = right_target_waypoint.get_right_lane()
 
-                if left_lane_waypoint and left_lane_waypoint.lane_type == carla.LaneType.Driving:
-                    a_spawn_point = carla.Transform(
-                        left_lane_waypoint.transform.location + carla.Location(z=0.5),
-                        left_lane_waypoint.transform.rotation
-                    )
-                    lane_description = "left lane"
-                # 如果左车道不可用，检查右车道
-                elif right_lane_waypoint and right_lane_waypoint.lane_type == carla.LaneType.Driving:
-                    a_spawn_point = carla.Transform(
-                        right_lane_waypoint.transform.location + carla.Location(z=0.5),
-                        right_lane_waypoint.transform.rotation
-                    )
-                    lane_description = "right lane"
+                    # 左车道优先
+                    if left_lane_waypoint and left_lane_waypoint.lane_type == carla.LaneType.Driving:
+                        a_spawn_point = carla.Transform(
+                            left_lane_waypoint.transform.location + carla.Location(z=0.5),
+                            left_lane_waypoint.transform.rotation
+                        )
+                        lane_description = "left lane (20m ahead)"
+                    # 如果左车道不可用，检查右车道
+                    elif right_lane_waypoint and right_lane_waypoint.lane_type == carla.LaneType.Driving:
+                        a_spawn_point = carla.Transform(
+                            right_lane_waypoint.transform.location + carla.Location(z=0.5),
+                            right_lane_waypoint.transform.rotation
+                        )
+                        lane_description = "right lane (10m ahead)"
 
                 # 如果找到可用的生成点
                 if a_spawn_point:
@@ -198,7 +235,7 @@ class World(object):
                     try:
                         a_car_bp = random.choice([
                             bp for bp in available_models
-                            if 'model3' in bp.id.lower() and bp.id not in [c_car_bp.id, b_car_bp.id]
+                            if bp.id not in [c_car_bp.id, b_car_bp.id]
                         ])
                     except:
                         a_car_bp = random.choice([
@@ -206,8 +243,7 @@ class World(object):
                             if bp.id not in [c_car_bp.id, b_car_bp.id]
                         ])
 
-                    # 生成A车，速度最快
-                    a_base_speed = self.base_speed + 10  # 比其他车快10km/h
+                    a_base_speed = self.base_speed - 1
 
                     print(f"Spawning A vehicle in {lane_description}, 10m ahead of B vehicle")
                     a_vehicle = self.world.spawn_actor(a_car_bp, a_spawn_point)
@@ -244,6 +280,8 @@ class World(object):
         self.traffic_manager.set_synchronous_mode(True)
         self.traffic_manager.global_percentage_speed_difference(10)
         self.traffic_manager.set_hybrid_physics_mode(True)
+        # 设置交通信号灯
+        set_traffic_lights(self.world)
 
         # 注册相机传感器回调
         self.camera.listen(lambda image: self._parse_image(image))
@@ -252,9 +290,9 @@ class World(object):
         ego_vehicle.set_autopilot(True, self.traffic_manager.get_port())
         self._set_vehicle_speed(ego_vehicle, self.base_speed)
         b_vehicle.set_autopilot(True, self.traffic_manager.get_port())
-        self._set_vehicle_speed(b_vehicle, self.base_speed - 5)
+        self._set_vehicle_speed(b_vehicle, self.base_speed + 1)
         a_vehicle.set_autopilot(True, self.traffic_manager.get_port())
-        self._set_vehicle_speed(a_vehicle, self.base_speed + 5)
+        self._set_vehicle_speed(a_vehicle, self.base_speed - 1)
 
         # 初始化世界状态
         self.world.tick()
@@ -283,22 +321,33 @@ class World(object):
             self.image_surface = pygame_surface
 
         # 记录和保存图像
-        if self.recording and self.recording_start_time is not None:
+        if self.recording_start_time is not None:
             elapsed_time = time.time() - self.recording_start_time
 
-            # 只在初始稳定时间后开始录制
+            # 缓存初始帧
+            if elapsed_time <= self.initial_stabilization_time:
+                if len(self.frame_buffer) < self.max_buffer_size:
+                    self.frame_buffer.append(bgr_array)
+
+            # 开始正式录制
             if elapsed_time > self.initial_stabilization_time:
+                # 先写入缓存帧
+                if self.frame_buffer:
+                    if self.video_writer is None:
+                        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                        self.video_writer = cv2.VideoWriter(
+                            os.path.join(self.video_dir, 'recording.mp4'),
+                            fourcc, self.fps,
+                            (image.width, image.height)
+                        )
+
+                    for cached_frame in self.frame_buffer:
+                        self.video_writer.write(cached_frame)
+                    self.frame_buffer.clear()
+
+                # 写入当前帧
                 frame_filename = os.path.join(self.img_dir, f"frame_{self.current_frame:06d}.png")
                 cv2.imwrite(frame_filename, bgr_array)
-
-                if self.video_writer is None:
-                    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-                    self.video_writer = cv2.VideoWriter(
-                        os.path.join(self.video_dir, 'recording.mp4'),
-                        fourcc, self.fps,
-                        (image.width, image.height)
-                    )
-
                 self.video_writer.write(bgr_array)
                 self.current_frame += 1
 
@@ -317,12 +366,12 @@ class World(object):
         # 录制结束检查
         if self.recording and (time.time() - self.recording_start_time) > (
                 self.recording_duration + self.initial_stabilization_time):
-            print("Recording Details:")
-            for vehicle_info in self.vehicle_details:
-                print(f"Vehicle: {vehicle_info['name']}, Model: {vehicle_info['model']}, "
-                      f"Speed: {vehicle_info['initial_speed']:.1f} km/h")
+            # print("Recording Details:")
+            # for vehicle_info in self.vehicle_details:
+            #     print(f"Vehicle: {vehicle_info['name']}, Model: {vehicle_info['model']}, "
+            #           f"Speed: {vehicle_info['initial_speed']:.1f} km/h")
 
-            print(f"Recording completed after {self.recording_duration} seconds")
+            # print(f"Recording completed after {self.recording_duration} seconds")
             self.recording = False
             if self.video_writer:
                 self.video_writer.release()
@@ -333,6 +382,8 @@ class World(object):
         settings = self.world.get_settings()
         settings.synchronous_mode = False
         self.world.apply_settings(settings)
+
+        reset_traffic_lights(self.world)
 
         if self.video_writer:
             self.video_writer.release()
