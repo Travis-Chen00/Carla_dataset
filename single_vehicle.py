@@ -89,7 +89,7 @@ class World(object):
             c_car_bp = random.choice(available_models)
 
         # 车辆参数设置
-        self.base_speed = 10
+        self.base_speed = 8
         self.vehicle_details = []
 
         # 创建ego车辆
@@ -154,6 +154,75 @@ class World(object):
             self.vehicle_details.append(b_info)
             self.vehicles.append(b_vehicle)
 
+            a_spawn_point = None
+            lane_description = None
+
+            # 找到比B车更前方10米的路点
+            extended_waypoints = []
+            current_waypoint = front_waypoint
+            distance_from_b = 0
+
+            while distance_from_b < 10:  # 向前10米
+                next_wps = current_waypoint.next(5.0)
+                if not next_wps:
+                    break
+                current_waypoint = next_wps[0]
+                extended_waypoints.append(current_waypoint)
+                distance_from_b += 5.0
+
+            # 如果成功找到更前方的路点
+            if extended_waypoints:
+                # 使用最后一个路点作为参考
+                final_waypoint = extended_waypoints[-1]
+
+                left_lane_waypoint = final_waypoint.get_left_lane()
+                right_lane_waypoint = final_waypoint.get_right_lane()
+
+                if left_lane_waypoint and left_lane_waypoint.lane_type == carla.LaneType.Driving:
+                    a_spawn_point = carla.Transform(
+                        left_lane_waypoint.transform.location + carla.Location(z=0.5),
+                        left_lane_waypoint.transform.rotation
+                    )
+                    lane_description = "left lane"
+                # 如果左车道不可用，检查右车道
+                elif right_lane_waypoint and right_lane_waypoint.lane_type == carla.LaneType.Driving:
+                    a_spawn_point = carla.Transform(
+                        right_lane_waypoint.transform.location + carla.Location(z=0.5),
+                        right_lane_waypoint.transform.rotation
+                    )
+                    lane_description = "right lane"
+
+                # 如果找到可用的生成点
+                if a_spawn_point:
+                    # 为A车选择车型（之前的代码保持不变）
+                    try:
+                        a_car_bp = random.choice([
+                            bp for bp in available_models
+                            if 'model3' in bp.id.lower() and bp.id not in [c_car_bp.id, b_car_bp.id]
+                        ])
+                    except:
+                        a_car_bp = random.choice([
+                            bp for bp in available_models
+                            if bp.id not in [c_car_bp.id, b_car_bp.id]
+                        ])
+
+                    # 生成A车，速度最快
+                    a_base_speed = self.base_speed + 10  # 比其他车快10km/h
+
+                    print(f"Spawning A vehicle in {lane_description}, 10m ahead of B vehicle")
+                    a_vehicle = self.world.spawn_actor(a_car_bp, a_spawn_point)
+
+                    # 将A车添加到车辆列表
+                    a_info = {
+                        'actor': a_vehicle,
+                        'model': a_car_bp.id,
+                        'initial_speed': a_base_speed,
+                        'spawn_point': a_spawn_point,
+                        'name': 'A-Vehicle'
+                    }
+                    self.vehicle_details.append(a_info)
+                    self.vehicles.append(a_vehicle)
+
         # 相机设置
         camera_bp = blueprint_library.find('sensor.camera.rgb')
         camera_bp.set_attribute('image_size_x', str(args.width))
@@ -184,6 +253,8 @@ class World(object):
         self._set_vehicle_speed(ego_vehicle, self.base_speed)
         b_vehicle.set_autopilot(True, self.traffic_manager.get_port())
         self._set_vehicle_speed(b_vehicle, self.base_speed - 5)
+        a_vehicle.set_autopilot(True, self.traffic_manager.get_port())
+        self._set_vehicle_speed(a_vehicle, self.base_speed + 5)
 
         # 初始化世界状态
         self.world.tick()
