@@ -4,26 +4,23 @@ import time
 import carla
 import numpy as np
 import cv2
-import pygame
 import random
-from pygame.locals import K_ESCAPE
-from pygame.locals import K_q
+import shutil
 from utils import *
 
 
 class World(object):
-    def __init__(self, client, args):
+    def __init__(self, client, args, dataset_idx):
         self.args = args
         self.client = client
         self.recording = True
         self.current_frame = 0
         self.vehicles = []
-        self.display = None
-        self.image_surface = None
+        self.dataset_idx = dataset_idx
 
         # 目录设置
-        self.img_dir = 'img'
-        self.video_dir = 'video'
+        self.img_dir = os.path.join('dataset', f'{dataset_idx:05d}', 'img')
+        self.video_dir = os.path.join('dataset', f'{dataset_idx:05d}',)
         os.makedirs(self.img_dir, exist_ok=True)
         os.makedirs(self.video_dir, exist_ok=True)
 
@@ -32,9 +29,7 @@ class World(object):
         self.video_writer = None
         self.recording_start_time = None
         self.recording_duration = 5.0
-        self.initial_stabilization_time = 3.0  # 增加初始稳定时间
-        self.frame_buffer = []  # 添加帧缓存
-        self.max_buffer_size = int(self.fps * self.initial_stabilization_time)  # 缓存3秒的帧
+        self.frame_buffer = []
 
         # 加载地图
         self.client.load_world('Town02')
@@ -59,7 +54,7 @@ class World(object):
         selected_spawn_point = random.choice(valid_spawn_points)
 
         # 车辆蓝图选择
-        available_models = blueprint_library.filter('vehicle.*')
+        available_models = filter_vehicle_blueprints(blueprint_library.filter('vehicle.*'))
         try:
             c_car_bp = next(bp for bp in available_models if
                             'model3' in bp.id.lower())
@@ -114,7 +109,8 @@ class World(object):
 
             # 为B车选择不同的车型
             try:
-                b_car_bp = random.choice([bp for bp in available_models if bp.id != c_car_bp.id])
+                b_car_bp = random.choice([bp for bp in available_models
+                                          if 'suv' in bp.id.lower() and bp.id != c_car_bp.id])
             except:
                 b_car_bp = random.choice(available_models)
 
@@ -183,7 +179,8 @@ class World(object):
                     try:
                         a_car_bp = random.choice([
                             bp for bp in available_models
-                            if bp.id not in [c_car_bp.id, b_car_bp.id]
+                            if bp.id not in [c_car_bp.id, b_car_bp.id] and
+                               get_vehicle_size(bp) < get_vehicle_size(b_car_bp)
                         ])
                     except:
                         a_car_bp = random.choice([
@@ -256,77 +253,43 @@ class World(object):
         self.traffic_manager.vehicle_percentage_speed_difference(vehicle, 0)
 
     def _parse_image(self, image):
-        # 图像处理和保存逻辑
         array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
         array = np.reshape(array, (image.height, image.width, 4))
         array = array[:, :, :3]
         bgr_array = np.copy(array[:, :, ::-1])
-        rgb_array = array
 
-        # Pygame显示
-        if self.display is not None:
-            pygame_surface = pygame.surfarray.make_surface(rgb_array.swapaxes(0, 1))
-            self.image_surface = pygame_surface
-
-        # 记录和保存图像
         if self.recording_start_time is not None:
             elapsed_time = time.time() - self.recording_start_time
 
-            # 缓存初始帧
-            if elapsed_time <= self.initial_stabilization_time:
-                if len(self.frame_buffer) < self.max_buffer_size:
-                    self.frame_buffer.append(bgr_array)
-
-            # 开始正式录制
-            if elapsed_time > self.initial_stabilization_time:
-                # 先写入缓存帧
-                if self.frame_buffer:
-                    if self.video_writer is None:
-                        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-                        self.video_writer = cv2.VideoWriter(
-                            os.path.join(self.video_dir, 'recording.mp4'),
-                            fourcc, self.fps,
-                            (image.width, image.height)
-                        )
-
-                    for cached_frame in self.frame_buffer:
-                        self.video_writer.write(cached_frame)
-                    self.frame_buffer.clear()
-
-                # 写入当前帧
+            # 只在录制时间内记录帧
+            if 0 <= elapsed_time <= self.recording_duration:
                 frame_filename = os.path.join(self.img_dir, f"frame_{self.current_frame:06d}.png")
                 cv2.imwrite(frame_filename, bgr_array)
+
+                if self.video_writer is None:
+                    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                    self.video_writer = cv2.VideoWriter(
+                        os.path.join(self.video_dir, 'recording.mp4'),
+                        fourcc, self.fps,
+                        (image.width, image.height)
+                    )
+
                 self.video_writer.write(bgr_array)
                 self.current_frame += 1
 
-    def tick(self, clock, display):
-        self.display = display
+    def tick(self):
         self.world.tick()
 
-        # 初始稳定处理
         if self.recording_start_time is None:
             self.recording_start_time = time.time()
 
-        # 渲染相机图像
-        if self.image_surface is not None:
-            display.blit(self.image_surface, (0, 0))
-
-        # 录制结束检查
-        if self.recording and (time.time() - self.recording_start_time) > (
-                self.recording_duration + self.initial_stabilization_time):
-            # print("Recording Details:")
-            # for vehicle_info in self.vehicle_details:
-            #     print(f"Vehicle: {vehicle_info['name']}, Model: {vehicle_info['model']}, "
-            #           f"Speed: {vehicle_info['initial_speed']:.1f} km/h")
-
-            # print(f"Recording completed after {self.recording_duration} seconds")
+        if self.recording and (time.time() - self.recording_start_time) > self.recording_duration:
             self.recording = False
             if self.video_writer:
                 self.video_writer.release()
                 print(f"Video saved to {self.video_dir}/recording.mp4")
 
     def destroy(self):
-        # 清理资源
         settings = self.world.get_settings()
         settings.synchronous_mode = False
         self.world.apply_settings(settings)
@@ -341,82 +304,47 @@ class World(object):
                 actor.destroy()
 
 
-def game_loop(args):
-    pygame.init()
-    pygame.font.init()
-    world = None
+def generate_dataset(args):
+    # 创建数据集根目录
+    os.makedirs('dataset', exist_ok=True)
 
-    try:
-        client = carla.Client(args.host, args.port)
-        client.set_timeout(2000.0)
+    # 如果数据集目录已经存在，先删除
+    if os.path.exists('dataset'):
+        shutil.rmtree('dataset')
+    os.makedirs('dataset')
 
-        display = pygame.display.set_mode(
-            (args.width, args.height),
-            pygame.HWSURFACE | pygame.DOUBLEBUF
-        )
-        pygame.display.set_caption("Two Vehicle Simulation")
+    for i in range(100):  # 生成100个视频
+        try:
+            client = carla.Client(args.host, args.port)
+            client.set_timeout(2000.0)
 
-        world = World(client, args)
-        clock = pygame.time.Clock()
+            world = World(client, args, i)
 
-        while True:
-            clock.tick_busy_loop(60)
+            while world.recording:
+                world.tick()
 
-            # 传递display给world.tick方法，使其能够渲染图像
-            world.tick(clock, display)
-
-            # 处理pygame事件
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    return
-                if event.type == pygame.KEYUP:
-                    if event.key == K_ESCAPE or event.key == K_q:
-                        return
-
-            # 更新显示
-            pygame.display.flip()
-
-    finally:
-        if world is not None:
             world.destroy()
-        pygame.quit()
+
+            print(f"Completed scenario {i}")
+        except Exception as e:
+            print(f"Error in scenario {i}: {e}")
+            continue
 
 
 def main():
-    argparser = argparse.ArgumentParser(description='CARLA Scenario')
-    argparser.add_argument(
-        '--host',
-        metavar='H',
-        default='127.0.0.1',
-        help='IP of the host server (default: 127.0.0.1)'
-    )
-    argparser.add_argument(
-        '-p', '--port',
-        metavar='P',
-        default=2000,
-        type=int,
-        help='TCP port to listen to (default: 2000)'
-    )
-    argparser.add_argument(
-        '--width',
-        default=800,
-        type=int,
-        help='Width of the window (default: 800)'
-    )
-    argparser.add_argument(
-        '--height',
-        default=600,
-        type=int,
-        help='Height of the window (default: 600)'
-    )
+    argparser = argparse.ArgumentParser(description='CARLA Dataset Generator')
+    argparser.add_argument('--host', metavar='H', default='127.0.0.1', help='CARLA server host')
+    argparser.add_argument('-p', '--port', metavar='P', default=2000, type=int, help='CARLA server port')
+    argparser.add_argument('--width', default=800, type=int, help='Image width')
+    argparser.add_argument('--height', default=600, type=int, help='Image height')
     args = argparser.parse_args()
 
     try:
-        game_loop(args)
+        generate_dataset(args)
     except KeyboardInterrupt:
         pass
     finally:
-        print('\nExit')
+        print('\nDataset generation complete')
 
 
 if __name__ == '__main__':
