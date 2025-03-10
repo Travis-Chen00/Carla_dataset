@@ -58,7 +58,7 @@ class World(object):
         self.initial_stabilization_time = 3.0  # 初始稳定时间
 
         # 加载地图
-        self.client.load_world('Town02')
+        self.client.load_world('Town05')
         self.world = self.client.get_world()
 
         # 清理现有车辆
@@ -73,6 +73,7 @@ class World(object):
 
         blueprint_library = self.world.get_blueprint_library()
         spawn_points = self.world.get_map().get_spawn_points()
+        carla_map = self.world.get_map()
 
         # 获取有效的spawn点
         valid_spawn_points = check_spawn_points(self.world, spawn_points)
@@ -82,13 +83,13 @@ class World(object):
         available_models = blueprint_library.filter('vehicle.*')
         try:
             c_car_bp = next(bp for bp in available_models if
-                            'mustang' in bp.id.lower() or 'etron' in bp.id.lower() or 'tt' in bp.id.lower())
+                            'mustang' in bp.id.lower())
         except StopIteration:
             print("Specified car models not found, using a random vehicle model")
             c_car_bp = random.choice(available_models)
 
         # 车辆参数设置
-        self.base_speed = random.uniform(40, 50)
+        self.base_speed = 10
         self.vehicle_details = []
 
         # 创建ego车辆
@@ -104,6 +105,54 @@ class World(object):
         }
         self.vehicle_details.append(ego_info)
         self.vehicles.append(ego_vehicle)
+
+        # 获取ego车辆前方的路点
+        waypoint = carla_map.get_waypoint(selected_spawn_point.location)
+
+        # 找到前方同一车道上的点
+        next_waypoints = []
+        current_waypoint = waypoint
+
+        # 向前找大约30米的点，确保在同一车道
+        distance = 0
+        while distance < 15:
+            next_wps = current_waypoint.next(5.0)  # 每次前进5米
+            if not next_wps:
+                break
+            current_waypoint = next_wps[0]  # 保持在同一车道
+            next_waypoints.append(current_waypoint)
+            distance += 5.0
+
+        if next_waypoints:
+            # 选择前方适当距离的路点
+            front_waypoint = next_waypoints[1]
+
+            # 创建B车的spawn点，使用与ego车相同的高度
+            spawn_transform = carla.Transform(
+                front_waypoint.transform.location + carla.Location(z=0.5),  # 稍微抬高以避免与地面碰撞
+                front_waypoint.transform.rotation
+            )
+
+            # 为B车选择不同的车型
+            try:
+                b_car_bp = random.choice([bp for bp in available_models if 'cybertruck' in bp.id.lower() and bp.id != c_car_bp.id])
+            except:
+                b_car_bp = random.choice(available_models)
+
+            # 生成B车
+            print(f"Spawning B vehicle at {spawn_transform.location}, {distance} meters ahead of ego")
+            b_vehicle = self.world.spawn_actor(b_car_bp, spawn_transform)
+
+            # 将B车添加到车辆列表
+            b_info = {
+                'actor': b_vehicle,
+                'model': b_car_bp.id,
+                'initial_speed': self.base_speed - 5,  # 让B车速度稍慢，便于观察
+                'spawn_point': spawn_transform,
+                'name': 'B-Vehicle'
+            }
+            self.vehicle_details.append(b_info)
+            self.vehicles.append(b_vehicle)
 
         # 相机设置
         camera_bp = blueprint_library.find('sensor.camera.rgb')
@@ -133,6 +182,8 @@ class World(object):
         # 车辆行为设置
         ego_vehicle.set_autopilot(True, self.traffic_manager.get_port())
         self._set_vehicle_speed(ego_vehicle, self.base_speed)
+        b_vehicle.set_autopilot(True, self.traffic_manager.get_port())
+        self._set_vehicle_speed(b_vehicle, self.base_speed - 5)
 
         # 初始化世界状态
         self.world.tick()
@@ -197,8 +248,8 @@ class World(object):
                 self.recording_duration + self.initial_stabilization_time):
             print("Recording Details:")
             for vehicle_info in self.vehicle_details:
-                # 打印车辆详细信息
-                pass
+                print(f"Vehicle: {vehicle_info['name']}, Model: {vehicle_info['model']}, "
+                      f"Speed: {vehicle_info['initial_speed']:.1f} km/h")
 
             print(f"Recording completed after {self.recording_duration} seconds")
             self.recording = False
@@ -233,7 +284,7 @@ def game_loop(args):
             (args.width, args.height),
             pygame.HWSURFACE | pygame.DOUBLEBUF
         )
-        pygame.display.set_caption("Single Vehicle Simulation")
+        pygame.display.set_caption("Two Vehicle Simulation")
 
         world = World(client, args)
         clock = pygame.time.Clock()
