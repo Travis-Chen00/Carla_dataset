@@ -18,21 +18,30 @@ class World(object):
         self.vehicles = []
         self.dataset_idx = dataset_idx
 
+        self.town = "Town02"
+
         # 目录设置
-        self.img_dir = os.path.join('dataset', f'{dataset_idx:05d}', 'img')
-        self.video_dir = os.path.join('dataset', f'{dataset_idx:05d}',)
-        os.makedirs(self.img_dir, exist_ok=True)
-        os.makedirs(self.video_dir, exist_ok=True)
+        self.img_dir = os.path.join('dataset', self.town, f'{dataset_idx:05d}', 'img')
+        self.video_dir = os.path.join('dataset', self.town, f'{dataset_idx:05d}',)
+        if not os.path.exists(self.img_dir):
+            os.makedirs(self.img_dir)
+        if not os.path.exists(self.video_dir):
+            os.makedirs(self.video_dir)
 
         # 录像设置
         self.fps = 60.0
         self.video_writer = None
         self.recording_start_time = None
-        self.recording_duration = 5.0
+        if self.town == "Town05":
+            self.recording_duration = 10.0
+        else:
+            self.recording_duration = 10.0
+        self.buffer_duration = 3.0  # 2秒缓冲时间
+        self.total_duration = self.buffer_duration + self.recording_duration
         self.frame_buffer = []
 
         # 加载地图
-        self.client.load_world('Town02')
+        self.client.load_world(f'{self.town}')
         self.world = self.client.get_world()
 
         # 清理现有车辆
@@ -206,8 +215,8 @@ class World(object):
 
         # 相机设置
         camera_bp = blueprint_library.find('sensor.camera.rgb')
-        camera_bp.set_attribute('image_size_x', str(args.width))
-        camera_bp.set_attribute('image_size_y', str(args.height))
+        camera_bp.set_attribute('image_size_x', '2560')
+        camera_bp.set_attribute('image_size_y', '1440')
         camera_bp.set_attribute('fov', '110')
 
         camera_transform = carla.Transform(
@@ -261,9 +270,9 @@ class World(object):
         if self.recording_start_time is not None:
             elapsed_time = time.time() - self.recording_start_time
 
-            # 只在录制时间内记录帧
-            if 0 <= elapsed_time <= self.recording_duration:
-                frame_filename = os.path.join(self.img_dir, f"frame_{self.current_frame:06d}.png")
+            # 只在实际录制时间内保存帧
+            if self.buffer_duration <= elapsed_time <= self.total_duration:
+                frame_filename = os.path.join(self.img_dir, f"{self.current_frame:06d}.png")
                 cv2.imwrite(frame_filename, bgr_array)
 
                 if self.video_writer is None:
@@ -283,7 +292,8 @@ class World(object):
         if self.recording_start_time is None:
             self.recording_start_time = time.time()
 
-        if self.recording and (time.time() - self.recording_start_time) > self.recording_duration:
+        # 使用total_duration判断录制结束
+        if self.recording and (time.time() - self.recording_start_time) > self.total_duration:
             self.recording = False
             if self.video_writer:
                 self.video_writer.release()
@@ -307,11 +317,6 @@ class World(object):
 def generate_dataset(args):
     # 创建数据集根目录
     os.makedirs('dataset', exist_ok=True)
-
-    # 如果数据集目录已经存在，先删除
-    if os.path.exists('dataset'):
-        shutil.rmtree('dataset')
-    os.makedirs('dataset')
 
     for i in range(100):  # 生成100个视频
         try:
