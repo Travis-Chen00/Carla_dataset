@@ -78,10 +78,41 @@ class World(object):
         ego_vehicle = self.world.spawn_actor(ego_car_bp, selected_spawn_point)
         self.vehicles.append(ego_vehicle)
 
+        forward_vector = selected_spawn_point.get_forward_vector()
+        b_car_bp = next(bp for bp in available_models if 'cybertruck' in bp.id.lower())
+
+        offset = 10  # B车在前方10米（可以根据需要调整）
+        max_attempts = 10  # 最大尝试次数
+
+        # 尝试找到可用的生成位置
+        for attempt in range(max_attempts):
+            # 基于选定的ego A车生成点，使用偏移逻辑计算B车的位置
+            spawn_point_vehicle = carla.Transform(
+                carla.Location(
+                    x=selected_spawn_point.location.x + offset * forward_vector.x,
+                    y=selected_spawn_point.location.y + offset * forward_vector.y,
+                    z=selected_spawn_point.location.z + 0.1  # 高度略微偏移
+                ),
+                selected_spawn_point.rotation
+            )
+
+            # 检查生成点是否空闲并生成B车
+            vehicle_b = self.world.try_spawn_actor(b_car_bp, spawn_point_vehicle)
+            if vehicle_b:
+                print(f"B car successfully spawned after {attempt + 1} attempts.")
+                self.vehicles.append(vehicle_b)
+                break
+            else:
+                # 如果生成失败，增加偏移尝试新位置
+                offset += 5  # 每次增加偏移距离
+        else:
+            print("Failed to spawn B car after multiple attempts.")
+            return  # 或者退出函数
+
         # 相机设置
         camera_bp = blueprint_library.find('sensor.camera.rgb')
-        camera_bp.set_attribute('image_size_x', '1280')
-        camera_bp.set_attribute('image_size_y', '720')
+        camera_bp.set_attribute('image_size_x', '1920')
+        camera_bp.set_attribute('image_size_y', '1080')
         camera_bp.set_attribute('fov', '110')
 
         camera_transform = carla.Transform(
@@ -100,6 +131,8 @@ class World(object):
         # 设置车辆为自动驾驶
         ego_vehicle.set_autopilot(True, self.traffic_manager.get_port())
         self.traffic_manager.vehicle_percentage_speed_difference(ego_vehicle, 0)
+        vehicle_b.set_autopilot(True, self.traffic_manager.get_port())
+        self.traffic_manager.vehicle_percentage_speed_difference(vehicle_b, 0)
 
         # 初始化世界状态
         self.world.tick()
@@ -114,7 +147,7 @@ class World(object):
 
         for spawn_point in spawn_points:
             waypoint = carla_map.get_waypoint(spawn_point.location)
-            search_distances = [5.0, 10.0, 15.0, 20.0]
+            search_distances = [15.0, 20.0]
 
             for distance in search_distances:
                 next_waypoints = waypoint.next(distance)
